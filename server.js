@@ -35,11 +35,23 @@ const weightEntrySchema = new mongoose.Schema({
 const WeightEntry = mongoose.model('WeightEntry', weightEntrySchema);
 
 // ============================================================
-// ROUTES - WEIGHT TRACKER
+// ROUTES - WEIGHT TRACKER (FIXED - No userId required)
 // ============================================================
 
-// GET all weight entries for a user
-app.get('/api/weights/:userId?', async (req, res) => {
+// GET all weight entries (uses default_user)
+app.get('/api/weights', async (req, res) => {
+    try {
+        const userId = 'default_user';
+        const entries = await WeightEntry.find({ userId }).sort({ date: -1 });
+        res.json(entries);
+    } catch (error) {
+        console.error('GET Weights Error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET all weight entries for a specific user (optional)
+app.get('/api/weights/user/:userId?', async (req, res) => {
     try {
         const userId = req.params.userId || 'default_user';
         const entries = await WeightEntry.find({ userId }).sort({ date: -1 });
@@ -51,9 +63,9 @@ app.get('/api/weights/:userId?', async (req, res) => {
 });
 
 // GET latest weight entry
-app.get('/api/weights/latest/:userId?', async (req, res) => {
+app.get('/api/weights/latest', async (req, res) => {
     try {
-        const userId = req.params.userId || 'default_user';
+        const userId = 'default_user';
         const entry = await WeightEntry.findOne({ userId }).sort({ date: -1 });
         res.json(entry || null);
     } catch (error) {
@@ -65,13 +77,13 @@ app.get('/api/weights/latest/:userId?', async (req, res) => {
 // POST - Add new weight entry
 app.post('/api/weights', async (req, res) => {
     try {
-        const { userId, weight, notes } = req.body;
+        const { weight, notes } = req.body;
         if (!weight || weight <= 0) {
             return res.status(400).json({ error: 'Valid weight is required' });
         }
         
         const entry = new WeightEntry({
-            userId: userId || 'default_user',
+            userId: 'default_user',
             weight: parseFloat(weight),
             notes: notes || '',
             date: new Date()
@@ -99,10 +111,10 @@ app.delete('/api/weights/:id', async (req, res) => {
     }
 });
 
-// DELETE - Clear all entries for a user
-app.delete('/api/weights/clear/:userId?', async (req, res) => {
+// DELETE - Clear all entries
+app.delete('/api/weights/clear', async (req, res) => {
     try {
-        const userId = req.params.userId || 'default_user';
+        const userId = 'default_user';
         await WeightEntry.deleteMany({ userId });
         res.json({ message: 'All entries cleared' });
     } catch (error) {
@@ -112,9 +124,9 @@ app.delete('/api/weights/clear/:userId?', async (req, res) => {
 });
 
 // GET - Stats (average, min, max, total)
-app.get('/api/weights/stats/:userId?', async (req, res) => {
+app.get('/api/weights/stats', async (req, res) => {
     try {
-        const userId = req.params.userId || 'default_user';
+        const userId = 'default_user';
         const entries = await WeightEntry.find({ userId });
         
         if (entries.length === 0) {
@@ -155,9 +167,10 @@ app.get('/api/health', (req, res) => {
         status: 'OK', 
         timestamp: new Date().toISOString(),
         routes: [
-            '/api/weights/:userId?',
-            '/api/weights/latest/:userId?',
-            '/api/weights/stats/:userId?'
+            '/api/weights',
+            '/api/weights/latest',
+            '/api/weights/stats',
+            '/api/weights/user/:userId'
         ]
     });
 });
@@ -169,12 +182,13 @@ app.get('/', (req, res) => {
         endpoints: {
             health: '/api/health',
             weights: {
-                get: '/api/weights/:userId?',
+                get: '/api/weights',
                 post: '/api/weights',
                 delete: '/api/weights/:id',
-                clear: '/api/weights/clear/:userId?',
-                stats: '/api/weights/stats/:userId?',
-                latest: '/api/weights/latest/:userId?'
+                clear: '/api/weights/clear',
+                stats: '/api/weights/stats',
+                latest: '/api/weights/latest',
+                getUser: '/api/weights/user/:userId'
             }
         }
     });
