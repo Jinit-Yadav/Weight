@@ -8,23 +8,31 @@ app.use(cors());
 app.use(express.json());
 
 // ============================================================
-// MONGODB CONNECTION WITH BETTER ERROR HANDLING
+// MONGODB CONNECTION - FIXED CONNECTION STRING
 // ============================================================
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://jinit2003_db_user:WDKchFu3cQG9NMDU@cluster0.zbkun8d.mongodb.net/';
+// IMPORTANT: Use the EXACT connection string from Atlas with retryWrites=true
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://jinit2003_db_user:WDKchFu3cQG9NMDU@cluster0.zbkun8d.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
 
-console.log('🔌 Attempting to connect to MongoDB...');
+console.log('🔌 Connecting to MongoDB Atlas...');
+console.log('📡 Connection string:', MONGODB_URI.replace(/:[^:]*@/, ':****@')); // Hide password
 
 mongoose.connect(MONGODB_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
-    serverSelectionTimeoutMS: 5000 // Timeout after 5 seconds
+    serverSelectionTimeoutMS: 10000,
+    socketTimeoutMS: 45000,
+    family: 4 // Use IPv4, skip trying IPv6
 })
 .then(() => {
     console.log('✅ Connected to MongoDB Atlas!');
+    console.log('📊 Database:', mongoose.connection.db.databaseName);
 })
 .catch(err => {
-    console.error('❌ MongoDB connection error:', err.message);
-    // Don't exit - keep the server running but with limited functionality
+    console.error('❌ MongoDB connection error:');
+    console.error('   Name:', err.name);
+    console.error('   Message:', err.message);
+    console.error('   Code:', err.code);
+    // Server stays running - will show as disconnected
 });
 
 const db = mongoose.connection;
@@ -32,7 +40,10 @@ db.on('error', (err) => {
     console.error('❌ MongoDB error:', err.message);
 });
 db.on('disconnected', () => {
-    console.log('⚠️ MongoDB disconnected');
+    console.log('⚠️ MongoDB disconnected - attempting to reconnect...');
+});
+db.on('reconnected', () => {
+    console.log('🔄 MongoDB reconnected!');
 });
 
 // ============================================================
@@ -49,25 +60,32 @@ const weightEntrySchema = new mongoose.Schema({
 const WeightEntry = mongoose.model('WeightEntry', weightEntrySchema);
 
 // ============================================================
-// ROUTES - WITH ERROR HANDLING
+// ROUTES
 // ============================================================
 
-// Health check - always works even if DB is down
+// Health check - shows DB status
 app.get('/api/health', (req, res) => {
+    const state = mongoose.connection.readyState;
+    const states = ['disconnected', 'connected', 'connecting', 'disconnecting'];
     res.json({ 
-        status: 'OK', 
+        status: 'OK',
         timestamp: new Date().toISOString(),
-        dbState: mongoose.connection.readyState,
-        dbStateText: ['disconnected', 'connected', 'connecting', 'disconnecting'][mongoose.connection.readyState] || 'unknown'
+        dbState: state,
+        dbStateText: states[state] || 'unknown',
+        dbConnected: state === 1,
+        mongodbUri: MONGODB_URI ? 'configured' : 'missing'
     });
 });
 
 // GET all weight entries
 app.get('/api/weights', async (req, res) => {
     try {
-        // Check if DB is connected
         if (mongoose.connection.readyState !== 1) {
-            return res.status(503).json({ error: 'Database not connected' });
+            return res.status(503).json({ 
+                error: 'Database not connected',
+                dbState: mongoose.connection.readyState,
+                message: 'Please wait for MongoDB to connect'
+            });
         }
         
         const userId = 'default_user';
@@ -83,7 +101,10 @@ app.get('/api/weights', async (req, res) => {
 app.get('/api/weights/stats', async (req, res) => {
     try {
         if (mongoose.connection.readyState !== 1) {
-            return res.status(503).json({ error: 'Database not connected' });
+            return res.status(503).json({ 
+                error: 'Database not connected',
+                dbState: mongoose.connection.readyState
+            });
         }
         
         const userId = 'default_user';
@@ -117,7 +138,10 @@ app.get('/api/weights/stats', async (req, res) => {
 app.post('/api/weights', async (req, res) => {
     try {
         if (mongoose.connection.readyState !== 1) {
-            return res.status(503).json({ error: 'Database not connected' });
+            return res.status(503).json({ 
+                error: 'Database not connected',
+                dbState: mongoose.connection.readyState
+            });
         }
         
         const { weight, notes } = req.body;
@@ -144,7 +168,10 @@ app.post('/api/weights', async (req, res) => {
 app.delete('/api/weights/:id', async (req, res) => {
     try {
         if (mongoose.connection.readyState !== 1) {
-            return res.status(503).json({ error: 'Database not connected' });
+            return res.status(503).json({ 
+                error: 'Database not connected',
+                dbState: mongoose.connection.readyState
+            });
         }
         
         const entry = await WeightEntry.findByIdAndDelete(req.params.id);
@@ -160,9 +187,11 @@ app.delete('/api/weights/:id', async (req, res) => {
 
 // Root route
 app.get('/', (req, res) => {
+    const state = mongoose.connection.readyState;
     res.json({ 
         message: '🏋️‍♂️ Weight Tracker API is running!',
-        dbConnected: mongoose.connection.readyState === 1,
+        dbConnected: state === 1,
+        dbState: ['disconnected', 'connected', 'connecting', 'disconnecting'][state] || 'unknown',
         endpoints: {
             health: '/api/health',
             weights: '/api/weights',
@@ -178,4 +207,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📍 Health check: http://localhost:${PORT}/api/health`);
+    console.log(`📍 Root: http://localhost:${PORT}/`);
 });
