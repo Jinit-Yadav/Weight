@@ -8,18 +8,32 @@ app.use(cors());
 app.use(express.json());
 
 // ============================================================
-// MONGODB CONNECTION
+// MONGODB CONNECTION WITH BETTER ERROR HANDLING
 // ============================================================
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://jinit2003_db_user:WDKchFu3cQG9NMDU@cluster0.zbkun8d.mongodb.net/';
 
+console.log('🔌 Attempting to connect to MongoDB...');
+
 mongoose.connect(MONGODB_URI, {
     useNewUrlParser: true,
-    useUnifiedTopology: true
+    useUnifiedTopology: true,
+    serverSelectionTimeoutMS: 5000 // Timeout after 5 seconds
+})
+.then(() => {
+    console.log('✅ Connected to MongoDB Atlas!');
+})
+.catch(err => {
+    console.error('❌ MongoDB connection error:', err.message);
+    // Don't exit - keep the server running but with limited functionality
 });
 
 const db = mongoose.connection;
-db.on('error', console.error.bind(console, '❌ Connection error:'));
-db.once('open', () => console.log('✅ Connected to MongoDB Atlas!'));
+db.on('error', (err) => {
+    console.error('❌ MongoDB error:', err.message);
+});
+db.on('disconnected', () => {
+    console.log('⚠️ MongoDB disconnected');
+});
 
 // ============================================================
 // WEIGHT TRACKER SCHEMA
@@ -35,24 +49,48 @@ const weightEntrySchema = new mongoose.Schema({
 const WeightEntry = mongoose.model('WeightEntry', weightEntrySchema);
 
 // ============================================================
-// ROUTES - WEIGHT TRACKER (FIXED - Proper route order)
+// ROUTES - WITH ERROR HANDLING
 // ============================================================
 
-// GET - Stats (average, min, max, total) - MUST come before /:id routes
+// Health check - always works even if DB is down
+app.get('/api/health', (req, res) => {
+    res.json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        dbState: mongoose.connection.readyState,
+        dbStateText: ['disconnected', 'connected', 'connecting', 'disconnecting'][mongoose.connection.readyState] || 'unknown'
+    });
+});
+
+// GET all weight entries
+app.get('/api/weights', async (req, res) => {
+    try {
+        // Check if DB is connected
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        
+        const userId = 'default_user';
+        const entries = await WeightEntry.find({ userId }).sort({ date: -1 });
+        res.json(entries);
+    } catch (error) {
+        console.error('GET Weights Error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET - Stats
 app.get('/api/weights/stats', async (req, res) => {
     try {
-        console.log('📊 Stats endpoint called');
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        
         const userId = 'default_user';
         const entries = await WeightEntry.find({ userId });
         
         if (entries.length === 0) {
-            return res.json({ 
-                total: 0, 
-                average: 0, 
-                min: 0, 
-                max: 0,
-                latest: null
-            });
+            return res.json({ total: 0, average: 0, min: 0, max: 0, latest: null });
         }
         
         const weights = entries.map(e => e.weight);
@@ -75,37 +113,13 @@ app.get('/api/weights/stats', async (req, res) => {
     }
 });
 
-// GET - Latest weight entry
-app.get('/api/weights/latest', async (req, res) => {
-    try {
-        console.log('📊 Latest endpoint called');
-        const userId = 'default_user';
-        const entry = await WeightEntry.findOne({ userId }).sort({ date: -1 });
-        res.json(entry || null);
-    } catch (error) {
-        console.error('GET Latest Weight Error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// GET all weight entries
-app.get('/api/weights', async (req, res) => {
-    try {
-        console.log('📊 GET /api/weights called');
-        const userId = 'default_user';
-        const entries = await WeightEntry.find({ userId }).sort({ date: -1 });
-        console.log(`✅ Found ${entries.length} entries`);
-        res.json(entries);
-    } catch (error) {
-        console.error('GET Weights Error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
 // POST - Add new weight entry
 app.post('/api/weights', async (req, res) => {
     try {
-        console.log('📊 POST /api/weights called with:', req.body);
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        
         const { weight, notes } = req.body;
         if (!weight || weight <= 0) {
             return res.status(400).json({ error: 'Valid weight is required' });
@@ -119,7 +133,6 @@ app.post('/api/weights', async (req, res) => {
         });
         
         await entry.save();
-        console.log('✅ Entry saved:', entry);
         res.status(201).json(entry);
     } catch (error) {
         console.error('POST Weight Error:', error);
@@ -127,15 +140,17 @@ app.post('/api/weights', async (req, res) => {
     }
 });
 
-// DELETE - Remove a weight entry (must come after specific routes)
+// DELETE - Remove a weight entry
 app.delete('/api/weights/:id', async (req, res) => {
     try {
-        console.log('📊 DELETE /api/weights/:id called with id:', req.params.id);
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ error: 'Database not connected' });
+        }
+        
         const entry = await WeightEntry.findByIdAndDelete(req.params.id);
         if (!entry) {
             return res.status(404).json({ error: 'Entry not found' });
         }
-        console.log('✅ Entry deleted:', entry);
         res.json({ message: 'Entry deleted successfully' });
     } catch (error) {
         console.error('DELETE Weight Error:', error);
@@ -143,69 +158,24 @@ app.delete('/api/weights/:id', async (req, res) => {
     }
 });
 
-// DELETE - Clear all entries
-app.delete('/api/weights/clear', async (req, res) => {
-    try {
-        console.log('📊 DELETE /api/weights/clear called');
-        const userId = 'default_user';
-        await WeightEntry.deleteMany({ userId });
-        console.log('✅ All entries cleared');
-        res.json({ message: 'All entries cleared' });
-    } catch (error) {
-        console.error('Clear Weights Error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ============================================================
-// HEALTH CHECK
-// ============================================================
-app.get('/api/health', (req, res) => {
-    res.json({ 
-        status: 'OK', 
-        timestamp: new Date().toISOString(),
-        routes: [
-            '/api/weights',
-            '/api/weights/stats',
-            '/api/weights/latest',
-            'POST /api/weights',
-            'DELETE /api/weights/:id'
-        ]
-    });
-});
-
 // Root route
 app.get('/', (req, res) => {
     res.json({ 
         message: '🏋️‍♂️ Weight Tracker API is running!',
+        dbConnected: mongoose.connection.readyState === 1,
         endpoints: {
             health: '/api/health',
-            weights: {
-                get: '/api/weights',
-                post: '/api/weights',
-                delete: '/api/weights/:id',
-                clear: '/api/weights/clear',
-                stats: '/api/weights/stats',
-                latest: '/api/weights/latest'
-            }
+            weights: '/api/weights',
+            stats: '/api/weights/stats'
         }
     });
 });
 
 // ============================================================
-// ERROR HANDLING
+// START SERVER
 // ============================================================
-app.use((req, res) => {
-    res.status(404).json({ 
-        error: 'Route not found',
-        message: `Cannot ${req.method} ${req.url}`
-    });
-});
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📍 Health check: http://localhost:${PORT}/api/health`);
-    console.log(`📍 Weight entries: http://localhost:${PORT}/api/weights`);
-    console.log(`📍 Stats: http://localhost:${PORT}/api/weights/stats`);
 });
